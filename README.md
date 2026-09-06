@@ -1,14 +1,21 @@
 # VaultShot
 
-Confidential no-loss prize savings on ETH Sepolia, built on the Zama Protocol (fhEVM) — the
-confidential-native successor to [FoggyPot](../foggypot). Instead of wrapping a plaintext ERC-20
-at the vault boundary, VaultShot deposits, holds, and pays out an already-confidential ERC-7984
-token (`cUSD`) the whole way through: deposit amounts, balances, and withdrawal amounts are real
-ciphertexts on-chain from the moment they enter the pool, not just "encrypted internally after a
-plaintext transferFrom." Draws are still provably fair and deposit-weighted using native FHE
-randomness over encrypted balances; only the draw's aggregate total is ever revealed in plaintext,
-never an individual balance; principal (plus any winnings) is withdrawable at any time, in a
-single transaction.
+**Confidential no-loss prize savings, built on Zama's Protocol.**
+Deposit, earn a shot at the prize, withdraw anytime — and no one but you can see your balance.
+
+📊 **Pitch deck:** [`docs/VaultShot-Pitch-Deck.pdf`](docs/VaultShot-Pitch-Deck.pdf)
+
+VaultShot is the confidential-native successor to [FoggyPot](../foggypot) — instead of wrapping a
+plaintext ERC-20 at the vault boundary, it deposits, holds, and pays out an already-confidential
+ERC-7984 token (`cUSD`) the whole way through. Deposit amounts, balances, and withdrawal amounts
+are real ciphertexts on-chain from the moment they enter the pool. Draws are provably fair and
+deposit-weighted using native FHE randomness over encrypted balances; only the draw's aggregate
+total is ever revealed in plaintext, never an individual balance; principal (plus any winnings) is
+withdrawable at any time, in a single transaction.
+
+---
+
+# Part 1 — Technical Reference
 
 ## Deployed contracts (Sepolia)
 
@@ -56,8 +63,6 @@ cp .env.example .env   # fill in your keys + the addresses above
 npm start
 ```
 
----
-
 ## Architecture
 
 | Contract | Responsibility |
@@ -67,16 +72,27 @@ npm start
 | `VaultShotBalanceLedger` | Encrypted per-user pool share (`mapping(address => euint64)`), with four differently-named but identical balance-reader aliases plus a batch reader — see §3 |
 | `VaultShotReserve` | Holds this pool's admin-funded mock yield, entirely in confidential cUSD (no separate encrypted mirror needed — the token itself is the real holding). Tracks a plaintext `availableBudget` counter fed only by the admin's own funding/payout actions, used to gate the draw's underfunded check |
 | `VaultShotPrizePool` | Owns the two-phase draw lifecycle (`requestDraw()` / `finalizeDraw()`). Runs the same weighted running-sum selection loop as FoggyPot, bounded by the just-revealed aggregate total |
-| `VaultShotDrawKeeper` | Chainlink Automation entry point. `checkUpkeep`/`performUpkeep` can only ever trigger phase 1 (`requestDraw`) — there's no way for that interface to wait on the off-chain `publicDecrypt` round trip needed before phase 2, so `finalizeDraw` is driven directly by client code instead |
+| `VaultShotDrawKeeper` | Chainlink Automation entry point ("bot" hook). `checkUpkeep`/`performUpkeep` can only ever trigger phase 1 (`requestDraw`) — there's no way for that interface to wait on the off-chain `publicDecrypt` round trip needed before phase 2, so `finalizeDraw` is driven directly by client/keeper code instead |
 | `MockUSDC` | Plaintext test ERC-20 with a public faucet — the one asset that ever crosses the wrap boundary |
+
+### Draw automation ("the bot")
+
+`VaultShotDrawKeeper` implements Chainlink's `checkUpkeep`/`performUpkeep` interface and can be
+registered as a standard Chainlink Automation upkeep for phase 1 (`requestDraw`) liveness. Because
+phase 2 (`finalizeDraw`) needs an off-chain `publicDecrypt` round trip in between, no on-chain
+automation interface can drive it end to end — [`client/src/vaultshot.ts`](client/src/vaultshot.ts)
+is the reference implementation of the script/bot that drives both phases directly: it calls
+`requestDraw()`, fetches the decrypted aggregate total via the Zama Relayer SDK, then calls
+`finalizeDraw()` with the resulting proof. Run it manually or wire it into a scheduled job (cron,
+Chainlink Automation for phase 1 + a small script for phase 2, etc.) for a fully automated pool.
 
 ---
 
 ## Frontend integration guide
 
 Everything below is exactly what [`client/src/vaultshot.ts`](client/src/vaultshot.ts) does — this
-section documents it standalone so you can wire up your own frontend without reading the reference
-client first.
+section documents it standalone so you can wire up your own frontend without reading the contracts
+first.
 
 ### 1. Setup
 
@@ -237,50 +253,6 @@ The KMS signed a specific byte layout — `finalizeDraw` verifies against those 
 
 All covered by tests in [`test/VaultShot.t.sol`](test/VaultShot.t.sol) (22 tests, all passing).
 
----
-
-## Prize tiers (public config, not encrypted)
-
-| Tier | Share of draw budget | Winners |
-|---|---|---|
-| Grand | 70% | 1 |
-| Minor | 30%, split evenly (10% each) | 3 |
-
-Tier *sizes and winner counts* are plaintext — only the balance comparisons that decide *who* wins
-stay encrypted.
-
-## Winner selection
-
-Same mechanism as FoggyPot: `FHE.rem(FHE.randEuint64(), totalDeposits)` draws one random number
-bounded by the freshly-revealed plaintext total; a running-sum comparison (`FHE.lt` + `FHE.select`)
-over each participant's **encrypted** balance picks whoever's cumulative weight crosses it — bigger
-balance, proportionally bigger slice, proportionally higher win chance. Grand and each Minor pass
-get their own balance snapshot, so a Grand winner is still eligible for a Minor prize in the same
-draw.
-
-## What stays encrypted vs. what's revealed
-
-**Stays encrypted:** every deposit amount, every balance, every withdrawal amount, each draw's
-random number, every win/lose comparison, and — until a winner personally decrypts their own
-balance — who won.
-
-**Revealed by necessity:**
-- That a wrap/deposit/withdraw transaction happened, and which address sent it.
-- The plaintext amount at the wrap/unwrap boundary (unavoidable — MockUSDC itself is plaintext).
-  Because wrap/unwrap are shared, generic contracts usable by anyone for any reason, this doesn't
-  by itself reveal *why* someone wrapped — only that they did.
-- The aggregate total deposited, once per draw (never any individual balance).
-- The number of participants in a draw, via `Ledger.allDepositors()`/`depositorsCount()`.
-- Reserve's plaintext `availableBudget` counter — fed only by the admin's own funding/payout
-  actions, so it was never secret to begin with.
-
-## Automating draws
-
-`VaultShotDrawKeeper` implements Chainlink's `checkUpkeep`/`performUpkeep` interface, but can only
-ever trigger phase 1 (`requestDraw`) — the interface has no way to wait for the off-chain
-`publicDecrypt` round trip needed before phase 2 can run. Drive both phases directly from your own
-backend/keeper script, exactly as [`client/src/vaultshot.ts`](client/src/vaultshot.ts) does.
-
 ## Development
 
 ```bash
@@ -291,3 +263,90 @@ forge test -vvv                                  # 22 tests against the FHEVM mo
 forge script script/DeployVaultShot.s.sol \
   --rpc-url <RPC> --account <keystore-name> --broadcast
 ```
+
+---
+
+# Part 2 — The Pitch
+
+*(Also available as a slide deck: [`docs/VaultShot-Pitch-Deck.pdf`](docs/VaultShot-Pitch-Deck.pdf))*
+
+## What VaultShot Does
+
+- 🔒 **Fully Confidential Balances** — Every deposit, balance, and withdrawal is encrypted
+  end-to-end using FHE; nobody, not even the protocol, can see individual amounts.
+- 🎲 **Provably Fair, Encrypted Draws** — Winners are selected using native on-chain FHE
+  randomness weighted by encrypted balances — verifiable fairness without ever revealing who has
+  what.
+- 🔓 **Withdraw Anytime, No Loss** — Principal plus any winnings can be withdrawn in a single
+  transaction at any time — deposits are never locked or put at risk.
+
+## The Problem
+
+Traditional no-loss prize savings protocols — like PoolTogether-style designs — expose every
+user's deposit size and every draw outcome on a public ledger. There's no financial privacy, and
+losers can infer who won just by watching balances change.
+
+## The VaultShot View
+
+On VaultShot, the chain records that deposits, draws, and withdrawals *happened* — never *how
+much*. Only the account holder can decrypt their own balance; everyone else, including the
+protocol itself, sees ciphertext.
+
+| | Public ledger, today | Public ledger, on VaultShot |
+|---|---|---|
+| Deposit size | Visible plaintext amount | Sealed ciphertext |
+| Balance | Visible plaintext amount | Sealed ciphertext |
+| Draw winner's amount | Visible plaintext amount | "Winner — amount sealed" |
+
+## How It Works
+
+1. **Wrap** — Plaintext stablecoin is wrapped into a confidential token.
+2. **Deposit** — A confidential transfer moves the balance into the vault.
+3. **Draw** — Encrypted balances feed an encrypted random draw — only the winner learns.
+4. **Withdraw** — Anytime, in a single transaction.
+
+## Version Roadmap
+
+| | V1 — FoggyPot | V2 — VaultShot (current) | V3 — Mainnet (future) |
+|---|---|---|---|
+| Status | Shipped | Current | Future |
+| Deposit boundary | Plaintext ERC-20 deposited directly into the vault, encrypted internally | Assets wrapped into a standalone confidential ERC-7984 token (cUSD) *before* touching the vault — genuine encrypted transfers end to end | Same confidential-native architecture, hardened for production |
+| Draw | On-chain FHE randomness over encrypted balances, single-transaction `runDraw()` | Two-phase draw reveal — exposes only the aggregate pool total, never individual balances | Same two-phase mechanism, with a decentralized keeper network driving both phases |
+| Withdraw | Two-step: request → decrypt → finalize | Single transaction | Single transaction |
+| Yield source | Admin-funded mock reserve | Admin-funded mock reserve | **Confidential integration with Steakhouse Financial's cUSDC vault** — real on-chain yield instead of manual admin funding, routed into the prize budget via a **Liquidation Pair** auction (the same yield → prize-token mechanism pioneered by PoolTogether V5), continuously and permissionlessly, with auction amounts kept confidential where the underlying yield source allows it |
+| Automation | Chainlink Automation-shaped keeper contract, phase 1 only | Chainlink Automation-shaped keeper contract, phase 1 only | Decentralized keeper network for full draw automation |
+| Scope | Single pool, deployed and tested live on Sepolia | Deployed and tested live on Sepolia, with a complete SDK-based client for real encrypt/decrypt flows | Multi-stablecoin, multi-draw-period pools; full wallet/frontend UX; security audit; mainnet on Ethereum L2s (pending Zama's mainnet-ready fhEVM release) |
+
+## Architecture Overview
+
+```
+                       ── User flow ──
+Token Wrapper ──▶ Vault (holds encrypted deposits) ◀──▶ Balance Ledger (per-user encrypted state)
+   plaintext                                                        │
+   → confidential                                                   │
+                                                                     │
+                    ── Yield & prize flow ──                        │
+Reserve (funds the prize budget) ──▶ Prize Pool (aggregate total only) ──▶ Draw Keeper (triggers each round)
+                                                                     │
+                                             Draw Keeper triggers each round;
+                                             the Vault settles winner payouts back to depositors.
+```
+
+## Confidentiality Guarantees
+
+| What Stays Encrypted | What's Necessarily Public |
+|---|---|
+| Individual deposit amounts | That a deposit/withdrawal occurred |
+| Per-user balances | Aggregate pool total at draw time |
+| Individual withdrawal amounts | The winning address |
+| Who holds how much at any time | Contract logic and draw timing |
+
+## Technical Stack
+
+Zama fhEVM · OpenZeppelin Confidential Contracts (ERC-7984) · Foundry · Zama Relayer SDK ·
+Ethereum Sepolia
+
+---
+
+*From FoggyPot to VaultShot to mainnet — building the first truly private no-loss savings
+protocol.*
