@@ -1,23 +1,38 @@
 # VaultShot
 
-![VaultShot](docs/screenshots/01-hero.png)
+![VaultShot](screenshots/Screenshot%202026-09-06%20at%201.19.28%E2%80%AFPM.png)
 
 **Confidential no-loss prize savings, built on Zama's Protocol.**
 Deposit, earn a shot at the prize, withdraw anytime — and no one but you can see your balance.
 
-📊 **Pitch deck:** [`docs/VaultShot-Pitch-Deck.pdf`](docs/VaultShot-Pitch-Deck.pdf)
+📊 **Pitch decks:**
+[`vaultshot-contracts(v2)/docs/VaultShot-Pitch-Deck.pdf`](vaultshot-contracts(v2)/docs/VaultShot-Pitch-Deck.pdf) (V2, current architecture) ·
+[`vaultshot-mainnet(v3)/VaultShot-Mainnet-Integration.pdf`](vaultshot-mainnet(v3)/VaultShot-Mainnet-Integration.pdf) (V3, the mainnet integration plan)
 
-VaultShot is the confidential-native successor to [FoggyPot](../foggypot) — instead of wrapping a
-plaintext ERC-20 at the vault boundary, it deposits, holds, and pays out an already-confidential
-ERC-7984 token (`cUSD`) the whole way through. Deposit amounts, balances, and withdrawal amounts
-are real ciphertexts on-chain from the moment they enter the pool. Draws are provably fair and
-deposit-weighted using native FHE randomness over encrypted balances; only the draw's aggregate
-total is ever revealed in plaintext, never an individual balance; principal (plus any winnings) is
-withdrawable at any time, in a single transaction.
+VaultShot is the confidential-native successor to [FoggyPot (V1)](foggypot(v1)) — instead of
+wrapping a plaintext ERC-20 at the vault boundary, it deposits, holds, and pays out an
+already-confidential ERC-7984 token (`cUSD`) the whole way through. Deposit amounts, balances, and
+withdrawal amounts are real ciphertexts on-chain from the moment they enter the pool. Draws are
+provably fair and deposit-weighted using native FHE randomness over encrypted balances; only the
+draw's aggregate total is ever revealed in plaintext, never an individual balance; principal (plus
+any winnings) is withdrawable at any time, in a single transaction.
+
+## Repo layout
+
+| Path | What it is |
+|---|---|
+| [`foggypot(v1)/`](foggypot(v1)) | V1 — the original FoggyPot contracts (plaintext-boundary deposits, two-step withdraw) |
+| [`vaultshot-contracts(v2)/`](vaultshot-contracts(v2)) | V2 — VaultShot's confidential-native contracts, tests, deploy script, and TS client (documented below) |
+| [`vaultshot-app/`](vaultshot-app) | The live frontend (React/Vite) — deposit/withdraw/draw/swap UI, plus `draw-server.mjs`, the keeper script backing the deployed draw bot |
+| [`vaultshot-mainnet(v3)/`](vaultshot-mainnet(v3)) | V3 — the mainnet integration pitch deck |
+| [`screenshots/`](screenshots) | Pitch deck slide screenshots used in this README |
 
 ---
 
-# Part 1 — Technical Reference
+# Part 1 — Technical Reference (V2)
+
+Everything below describes [`vaultshot-contracts(v2)/`](vaultshot-contracts(v2)) — VaultShot's
+current, deployed-and-tested architecture.
 
 ## Deployed contracts (Sepolia)
 
@@ -37,9 +52,10 @@ One demo pool, 5-minute draw period, 100 cUSD prize budget per draw.
 
 **[fhevm-foundry-template.onrender.com](https://fhevm-foundry-template.onrender.com)**
 
-A hosted keeper service that drives the two-phase draw automatically — `requestDraw()`, the
-off-chain `publicDecrypt()` round trip, then `finalizeDraw()` — every time the pool's draw window
-elapses, so draws keep completing without anyone manually running the client script. See
+A hosted keeper service — [`vaultshot-app/draw-server.mjs`](vaultshot-app/draw-server.mjs) — that
+drives the two-phase draw automatically: `requestDraw()`, the off-chain `publicDecrypt()` round
+trip, then `finalizeDraw()`, every time the pool's draw window elapses, so draws keep completing
+without anyone manually running a script. See
 [Draw automation ("the bot")](#draw-automation-the-bot) below for what it's actually calling under
 the hood.
 
@@ -66,10 +82,10 @@ MockUSDC(0x0A284F0eEe6df90f0e24890ba8D5518656705547).faucet()
 | Unwrap (optional, separate) | User | `VaultShotToken.unwrap(from, to, amount)` then `finalizeUnwrap(...)` | Converts cUSD back to plaintext MockUSDC — a two-step public-decrypt round trip, entirely independent of VaultShot's own contracts |
 
 A full working reference implementation of every step is in
-[`client/src/vaultshot.ts`](client/src/vaultshot.ts):
+[`vaultshot-contracts(v2)/client/src/vaultshot.ts`](vaultshot-contracts(v2)/client/src/vaultshot.ts):
 
 ```bash
-cd client
+cd vaultshot-contracts(v2)/client
 npm install
 cp .env.example .env   # fill in your keys + the addresses above
 npm start
@@ -92,19 +108,21 @@ npm start
 `VaultShotDrawKeeper` implements Chainlink's `checkUpkeep`/`performUpkeep` interface and can be
 registered as a standard Chainlink Automation upkeep for phase 1 (`requestDraw`) liveness. Because
 phase 2 (`finalizeDraw`) needs an off-chain `publicDecrypt` round trip in between, no on-chain
-automation interface can drive it end to end — [`client/src/vaultshot.ts`](client/src/vaultshot.ts)
+automation interface can drive it end to end —
+[`vaultshot-contracts(v2)/client/src/vaultshot.ts`](vaultshot-contracts(v2)/client/src/vaultshot.ts)
 is the reference implementation of the script/bot that drives both phases directly: it calls
 `requestDraw()`, fetches the decrypted aggregate total via the Zama Relayer SDK, then calls
-`finalizeDraw()` with the resulting proof. Run it manually or wire it into a scheduled job (cron,
-Chainlink Automation for phase 1 + a small script for phase 2, etc.) for a fully automated pool.
+`finalizeDraw()` with the resulting proof. [`vaultshot-app/draw-server.mjs`](vaultshot-app/draw-server.mjs)
+is what's actually deployed and running this on a schedule at the Render URL above.
 
 ---
 
 ## Frontend integration guide
 
-Everything below is exactly what [`client/src/vaultshot.ts`](client/src/vaultshot.ts) does — this
-section documents it standalone so you can wire up your own frontend without reading the contracts
-first.
+Everything below is exactly what
+[`vaultshot-contracts(v2)/client/src/vaultshot.ts`](vaultshot-contracts(v2)/client/src/vaultshot.ts)
+does — this section documents it standalone so you can wire up your own frontend without reading
+the contracts first.
 
 ### 1. Setup
 
@@ -263,11 +281,14 @@ The KMS signed a specific byte layout — `finalizeDraw` verifies against those 
 | Non-PrizePool calling `Reserve.releaseTo()` | `"Reserve: not prize pool"` | `onlyPrizePool` modifier |
 | Reserve underfunded at draw time | Draw silently skips (`DrawSkipped` event), no revert | `finalizeDraw()`'s budget check |
 
-All covered by tests in [`test/VaultShot.t.sol`](test/VaultShot.t.sol) (22 tests, all passing).
+All covered by tests in
+[`vaultshot-contracts(v2)/test/VaultShot.t.sol`](vaultshot-contracts(v2)/test/VaultShot.t.sol)
+(22 tests, all passing).
 
 ## Development
 
 ```bash
+cd vaultshot-contracts(v2)
 forge soldeer install
 forge build
 forge test -vvv                                  # 22 tests against the FHEVM mock
@@ -278,13 +299,13 @@ forge script script/DeployVaultShot.s.sol \
 
 ---
 
-# Part 2 — The Pitch
+# Part 2 — The Pitch (V2)
 
-*(Also available as a slide deck: [`docs/VaultShot-Pitch-Deck.pdf`](docs/VaultShot-Pitch-Deck.pdf))*
+*(Also available as a slide deck: [`vaultshot-contracts(v2)/docs/VaultShot-Pitch-Deck.pdf`](vaultshot-contracts(v2)/docs/VaultShot-Pitch-Deck.pdf))*
 
 ## What VaultShot Does
 
-![What VaultShot Does](docs/screenshots/06-what-it-does.png)
+![What VaultShot Does](screenshots/Screenshot%202026-09-06%20at%201.19.59%E2%80%AFPM.png)
 
 - 🔒 **Fully Confidential Balances** — Every deposit, balance, and withdrawal is encrypted
   end-to-end using FHE; nobody, not even the protocol, can see individual amounts.
@@ -296,7 +317,7 @@ forge script script/DeployVaultShot.s.sol \
 
 ## The Problem
 
-![The Problem](docs/screenshots/02-problem.png)
+![The Problem](screenshots/Screenshot%202026-09-06%20at%201.19.33%E2%80%AFPM.png)
 
 Traditional no-loss prize savings protocols — like PoolTogether-style designs — expose every
 user's deposit size and every draw outcome on a public ledger. There's no financial privacy, and
@@ -304,7 +325,7 @@ losers can infer who won just by watching balances change.
 
 ## The VaultShot View
 
-![The VaultShot View](docs/screenshots/03-vaultshot-view.png)
+![The VaultShot View](screenshots/Screenshot%202026-09-06%20at%201.19.37%E2%80%AFPM.png)
 
 On VaultShot, the chain records that deposits, draws, and withdrawals *happened* — never *how
 much*. Only the account holder can decrypt their own balance; everyone else, including the
@@ -325,7 +346,7 @@ protocol itself, sees ciphertext.
 
 ## Version Roadmap
 
-![Version Roadmap](docs/screenshots/04-roadmap.png)
+![Version Roadmap](screenshots/Screenshot%202026-09-06%20at%201.19.44%E2%80%AFPM.png)
 
 | | V1 — FoggyPot | V2 — VaultShot (current) | V3 — Mainnet (future) |
 |---|---|---|---|
@@ -337,9 +358,15 @@ protocol itself, sees ciphertext.
 | Automation | Chainlink Automation-shaped keeper contract, phase 1 only | Chainlink Automation-shaped keeper contract, phase 1 only | Decentralized keeper network for full draw automation |
 | Scope | Single pool, deployed and tested live on Sepolia | Deployed and tested live on Sepolia, with a complete SDK-based client for real encrypt/decrypt flows | Multi-stablecoin, multi-draw-period pools; full wallet/frontend UX; security audit; mainnet on Ethereum L2s (pending Zama's mainnet-ready fhEVM release) |
 
+See [`vaultshot-mainnet(v3)/VaultShot-Mainnet-Integration.pdf`](vaultshot-mainnet(v3)/VaultShot-Mainnet-Integration.pdf)
+for the full V3 mainnet integration plan — grounded in Zama's actual live mainnet infrastructure
+(the Zama × Morpho × Steakhouse Financial confidential USDC yield vault, live since June 2026) and
+a proposed "Confidential Liquidation Pair" for routing that real yield into VaultShot's prize
+budget without ever revealing an individual depositor's contribution.
+
 ## Architecture Overview
 
-![Architecture Overview](docs/screenshots/05-architecture.png)
+![Architecture Overview](screenshots/Screenshot%202026-09-06%20at%201.19.49%E2%80%AFPM.png)
 
 ```
                        ── User flow ──
@@ -367,6 +394,33 @@ Reserve (funds the prize budget) ──▶ Prize Pool (aggregate total only) ─
 
 Zama fhEVM · OpenZeppelin Confidential Contracts (ERC-7984) · Foundry · Zama Relayer SDK ·
 Ethereum Sepolia
+
+---
+
+# Part 3 — V3: The Mainnet Plan
+
+Full deck: [`vaultshot-mainnet(v3)/VaultShot-Mainnet-Integration.pdf`](vaultshot-mainnet(v3)/VaultShot-Mainnet-Integration.pdf)
+
+Summary of the plan:
+
+- **Zama's mainnet is live.** Zama Protocol launched on Ethereum on December 30, 2025, and executed
+  its first confidential stablecoin transfer (encrypted USDT, cUSDT) on-chain.
+- **Confidential USDC yield is also live.** Zama, Morpho, and Steakhouse Financial launched the
+  **Steakhouse Confidential Prime USDC** vault — the first DeFi yield product for confidential USDC
+  (cUSDC) on Ethereum — deposits open since June 23, 2026, ~3.5–5% net APY, routed into Steakhouse's
+  Prime v2 strategy on Morpho, with deposits batched every 24 hours so individual contributions
+  stay hidden.
+- **VaultShot doesn't need to invent yield generation for V3 — it needs to plug into what already
+  shipped.** V2's Reserve is an admin-funded placeholder for exactly this kind of real, confidential
+  yield source.
+- **The creative piece: a Confidential Liquidation Pair.** PoolTogether V5's Liquidation Pair
+  auctions accrued yield for prize tokens via a continuous gradual Dutch auction. VaultShot's
+  version has to run on encrypted yield — so it reveals only a periodic aggregate batch total (the
+  same pattern VaultShot already uses for its own draw total, and the same batching-privacy model
+  Steakhouse's own vault uses for deposits), never any individual depositor's contribution.
+- **Milestones:** security audit → Reserve↔Steakhouse vault integration → build the Confidential
+  Liquidation Pair → decentralized keeper network → multi-pool/multi-asset support → mainnet launch
+  on an Ethereum L2.
 
 ---
 
