@@ -1,5 +1,7 @@
 # VaultShot
 
+![VaultShot](docs/screenshots/01-hero.png)
+
 **Confidential no-loss prize savings, built on Zama's Protocol.**
 Deposit, earn a shot at the prize, withdraw anytime — and no one but you can see your balance.
 
@@ -30,6 +32,16 @@ withdrawable at any time, in a single transaction.
 | VaultShotDrawKeeper | `0x43bB43D3aBc408A63888cFE228e976F41955fE28` |
 
 One demo pool, 5-minute draw period, 100 cUSD prize budget per draw.
+
+## Draw bot (deployed, live)
+
+**[fhevm-foundry-template.onrender.com](https://fhevm-foundry-template.onrender.com)**
+
+A hosted keeper service that drives the two-phase draw automatically — `requestDraw()`, the
+off-chain `publicDecrypt()` round trip, then `finalizeDraw()` — every time the pool's draw window
+elapses, so draws keep completing without anyone manually running the client script. See
+[Draw automation ("the bot")](#draw-automation-the-bot) below for what it's actually calling under
+the hood.
 
 ## Getting the test token
 
@@ -272,6 +284,8 @@ forge script script/DeployVaultShot.s.sol \
 
 ## What VaultShot Does
 
+![What VaultShot Does](docs/screenshots/06-what-it-does.png)
+
 - 🔒 **Fully Confidential Balances** — Every deposit, balance, and withdrawal is encrypted
   end-to-end using FHE; nobody, not even the protocol, can see individual amounts.
 - 🎲 **Provably Fair, Encrypted Draws** — Winners are selected using native on-chain FHE
@@ -282,11 +296,15 @@ forge script script/DeployVaultShot.s.sol \
 
 ## The Problem
 
+![The Problem](docs/screenshots/02-problem.png)
+
 Traditional no-loss prize savings protocols — like PoolTogether-style designs — expose every
 user's deposit size and every draw outcome on a public ledger. There's no financial privacy, and
 losers can infer who won just by watching balances change.
 
 ## The VaultShot View
+
+![The VaultShot View](docs/screenshots/03-vaultshot-view.png)
 
 On VaultShot, the chain records that deposits, draws, and withdrawals *happened* — never *how
 much*. Only the account holder can decrypt their own balance; everyone else, including the
@@ -307,6 +325,8 @@ protocol itself, sees ciphertext.
 
 ## Version Roadmap
 
+![Version Roadmap](docs/screenshots/04-roadmap.png)
+
 | | V1 — FoggyPot | V2 — VaultShot (current) | V3 — Mainnet (future) |
 |---|---|---|---|
 | Status | Shipped | Current | Future |
@@ -318,6 +338,8 @@ protocol itself, sees ciphertext.
 | Scope | Single pool, deployed and tested live on Sepolia | Deployed and tested live on Sepolia, with a complete SDK-based client for real encrypt/decrypt flows | Multi-stablecoin, multi-draw-period pools; full wallet/frontend UX; security audit; mainnet on Ethereum L2s (pending Zama's mainnet-ready fhEVM release) |
 
 ## Architecture Overview
+
+![Architecture Overview](docs/screenshots/05-architecture.png)
 
 ```
                        ── User flow ──
